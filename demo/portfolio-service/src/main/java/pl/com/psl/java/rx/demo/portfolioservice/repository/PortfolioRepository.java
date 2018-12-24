@@ -8,5 +8,5 @@ import reactor.core.publisher.Flux;
 @Repository
 public interface PortfolioRepository extends ReactiveCrudRepository<Portfolio, String> {
 
-    Flux<Portfolio> findByCustomerName(String customerName);
+    Flux<Portfolio> findByCustomerId(Long customerId);
 }

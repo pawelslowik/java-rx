@@ -11,7 +11,7 @@ public class Portfolio {
     @Id
     private String id;
     @NonNull
-    private String customerName;
+    private Long customerId;
     @NonNull
     private String stockSymbol;
     @NonNull
