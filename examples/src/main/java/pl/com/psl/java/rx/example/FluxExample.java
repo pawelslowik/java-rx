@@ -1,7 +1,9 @@
 package pl.com.psl.java.rx.example;
 
+import org.reactivestreams.Subscription;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.publisher.BaseSubscriber;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
@@ -15,7 +17,7 @@ public class FluxExample {
     private static final Logger LOGGER = LoggerFactory.getLogger(FluxExample.class);
 
     public static void main(String[] args) throws Exception {
-        new FluxExample().handleErrors();
+        new FluxExample().customBackpressureSlowMapper();
     }
 
     private void justNumber() {
@@ -24,7 +26,7 @@ public class FluxExample {
     }
 
     private void rangeNumbers() {
-        Flux.range(0,3)
+        Flux.range(0,4)
                 .map(String::valueOf)
                 .subscribe(LOGGER::info);
     }
@@ -57,7 +59,7 @@ public class FluxExample {
     }
 
     private void generate() {
-        // generates infinite number of values
+        //keeps generating numbers, but we take only firs 4
         Flux<String> generatedNumbers = Flux.generate(() -> 0, (number, sink) -> {
             sink.next(String.valueOf(number));
             return number + 1;
@@ -77,19 +79,21 @@ public class FluxExample {
     }
 
     private void concatWith() throws InterruptedException {
+        //concatenate two publishers, elements don't intertwine
         Flux.range(0, 4)
                 .delayElements(Duration.ofSeconds(1))
-                .concatWith(Flux.just(4, 5))
+                .concatWith(Flux.just(4, 5).delayElements(Duration.ofSeconds(2)))
                 .map(String::valueOf)
                 .subscribe(LOGGER::info);
 
-        Thread.sleep(5000);
+        Thread.sleep(10000);
     }
 
     private void mergeWith() throws InterruptedException {
+        //merge two publishers, element can intertwine
         Flux.range(0, 4)
                 .delayElements(Duration.ofSeconds(1))
-                .mergeWith(Flux.just(4, 5))
+                .mergeWith(Flux.just(4, 5).delayElements(Duration.ofSeconds(2)))
                 .map(String::valueOf)
                 .subscribe(LOGGER::info);
 
@@ -97,6 +101,7 @@ public class FluxExample {
     }
 
     private void zipWith() throws InterruptedException {
+        //wait for both publishers to emit next element and combine both into a single tuple
         Flux<LocalTime> secondInterval = Flux.interval(Duration.ofSeconds(1))
                 .map(tick -> LocalTime.now());
 
@@ -110,14 +115,19 @@ public class FluxExample {
 
     private void filter() {
         Flux.range(0, 4)
+                .doOnNext(n -> LOGGER.info("Published: {}", n))
                 .take(3)
+                .doOnNext(n -> LOGGER.info("Took: {}", n))
                 .filter(n -> n % 2 == 0)
+                .doOnNext(n -> LOGGER.info("Passed filter: {}", n))
                 .skip(1)
+                .doOnNext(n -> LOGGER.info("Not skipped: {}", n))
                 .map(String::valueOf)
                 .subscribe(LOGGER::info);
     }
 
     private void peekAndHandle() {
+        //peeks first, then handles in subscribe()
         Flux.range(0, 4)
                 .map(n -> {
                     if (n == 2) {
@@ -158,7 +168,7 @@ public class FluxExample {
                 })
                 .doOnError(e -> LOGGER.error("Received error: {}", e.getMessage()))
                 .onErrorContinue(p -> errorCounter.get() < allowedErrors,(e, n) -> {
-                    errorCounter.addAndGet(1);
+                    errorCounter.incrementAndGet();
                     LOGGER.warn("Continuing on error '{}' on element {}", e.getMessage(), n);
                 })
                 .onErrorResume(e -> {
@@ -167,5 +177,105 @@ public class FluxExample {
                 })
                 .map(String::valueOf)
                 .subscribe(n -> LOGGER.info("Subscriber received element {}", n));
+    }
+
+    private void noBackpressureRequestMax() throws InterruptedException {
+        //requesting max amount of elements
+        Flux.range(0 ,100_000)
+                .doOnNext(n -> LOGGER.info("Published {}", n))
+                .doOnRequest(amount -> LOGGER.info("Requested {} elements", amount))
+                .doOnComplete(() -> LOGGER.info("Completed"))
+                .subscribe(n -> {
+                    LOGGER.info("Consumed {}", n);
+                    LOGGER.info("------------------");
+                });
+    }
+
+    private void backpressureRequestOneWithSubscriber() throws InterruptedException {
+        //requesting max amount of elements
+        Flux.range(0 ,100_000)
+                .doOnNext(n -> LOGGER.info("Published {}", n))
+                .doOnRequest(amount -> LOGGER.info("Requested {} elements", amount))
+                .doOnComplete(() -> LOGGER.info("Completed"))
+                .subscribe(new BaseSubscriber<Integer>() {
+                    @Override
+                    protected void hookOnSubscribe(Subscription subscription) {
+                        request(1);
+                    }
+
+                    @Override
+                    protected void hookOnNext(Integer value) {
+                        LOGGER.info("Consumed {}", value);
+                        LOGGER.info("------------------");
+                        request(1);
+                    }
+                });
+    }
+
+    private static class BigObject {
+        private int index;
+        private Integer[] arr;
+
+        BigObject(int index) {
+            this.index = index;
+            this.arr = new Integer[100_000];
+        }
+
+        @Override
+        public String toString() {
+            return "BigObject{" +
+                    "index=" + index +
+                    '}';
+        }
+    }
+
+    private void defaultBackpressureSlowMapper() throws InterruptedException {
+        //flatMap requests default of 256 elements, then one new element after consuming previous one
+        //due to slow mapper, program can run out of memory (depending on Xmx), as big objects are being produced, but not consumed
+        Flux<Object> bigObjects = Flux.generate(() -> 0, (i, sink) -> {
+            sink.next(new BigObject(i));
+            return i + 1;
+        });
+
+        bigObjects
+                .take(200)
+                .doOnNext(n -> {
+                    LOGGER.info("Published {}", n);
+                    LOGGER.info("Free memory: {}", Runtime.getRuntime().freeMemory());
+                })
+                .doOnRequest(amount -> LOGGER.info("Requested {} elements", amount))
+                .flatMap(n -> Flux.just(n).delayElements(Duration.ofMillis(500)).map(dn -> "mapped " + dn))
+                .doOnComplete(() -> LOGGER.info("Completed"))
+                .subscribe(s -> {
+                    LOGGER.info("Consumed {}", s);
+                    LOGGER.info("----------------");
+                });
+
+        Thread.sleep(60000);
+    }
+
+    private void customBackpressureSlowMapper() throws InterruptedException {
+        //flatMap requests 4 elements, then continues prefetching next elements after consuming previous ones
+        //program does not run out of memory due to limited amount of big objects being published
+        Flux<Object> bigObjects = Flux.generate(() -> 0, (i, sink) -> {
+            sink.next(new BigObject(i));
+            return i + 1;
+        });
+
+        bigObjects
+                .take(200)
+                .doOnNext(n -> {
+                    LOGGER.info("Published {}", n);
+                    LOGGER.info("Free memory: {}", Runtime.getRuntime().freeMemory());
+                })
+                .doOnRequest(amount -> LOGGER.info("Requested {} elements", amount))
+                .flatMap(n -> Flux.just(n).delayElements(Duration.ofMillis(500)).map(dn -> "mapped " + dn), 4, 1)
+                .doOnComplete(() -> LOGGER.info("Completed"))
+                .subscribe(s -> {
+                    LOGGER.info("Consumed {}", s);
+                    LOGGER.info("----------------");
+                });
+
+        Thread.sleep(60000);
     }
 }
