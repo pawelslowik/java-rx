@@ -32,7 +32,7 @@ public class PortfolioService {
                 new Portfolio(1L, "stock_b", 5L),
                 new Portfolio(2L, "stock_b", 1L)
                 )
-        ).publish().connect();
+        ).subscribe();
     }
 
     public Flux<Portfolio> getCustomerPortfolio(Long customerId) {
