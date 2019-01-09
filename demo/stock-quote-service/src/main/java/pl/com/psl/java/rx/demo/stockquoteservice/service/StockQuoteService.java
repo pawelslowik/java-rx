@@ -9,17 +9,12 @@ import pl.com.psl.java.rx.demo.stockquoteservice.model.StockQuotes;
 import pl.com.psl.java.rx.demo.stockquoteservice.repository.StockQuoteRepository;
 import reactor.core.publisher.ConnectableFlux;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.SynchronousSink;
-import reactor.util.function.Tuple2;
 
 import javax.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 @Service
 public class StockQuoteService {
@@ -33,23 +28,16 @@ public class StockQuoteService {
 
     @PostConstruct
     public void startPublishingStockQuotes() {
-        Flux<List<StockQuote>> generatedStockQuotes = Flux.generate((SynchronousSink<List<StockQuote>> sink) -> {
-            Flux.fromStream(Stream.of("stock_a", "stock_b", "stock_c"))
-                    .map(stockSymbol -> {
-                        LocalDateTime timestamp = LocalDateTime.now();
-                        BigDecimal price = BigDecimal.valueOf(ThreadLocalRandom.current().nextLong(0, 10));
-                        return new StockQuote(stockSymbol, price, timestamp);
-                    })
-                    .collect(Collectors.toList())
-                    .subscribe(sink::next);
-        });
-
-        stockQuotes = Flux.interval(Duration.ofSeconds(5))
-                .zipWith(generatedStockQuotes)
-                .map(Tuple2::getT2)
-                .flatMap(list -> Flux.fromIterable(list)
+        stockQuotes = Flux.interval(Duration.ofSeconds(2))
+                .map(n -> LocalDateTime.now())
+                .flatMap(timestamp -> Flux.just("stock_a", "stock_b", "stock_c")
+                        .map(stockSymbol -> {
+                            BigDecimal price = BigDecimal.valueOf(ThreadLocalRandom.current().nextLong(0, 10));
+                            return new StockQuote(stockSymbol, price, timestamp);
+                        })
                         .flatMap(stockQuoteRepository::save)
                         .collectList()
+
                 )
                 .map(StockQuotes::new)
                 .doOnNext(sq -> LOGGER.info("Publishing stock quotes={}", sq))
